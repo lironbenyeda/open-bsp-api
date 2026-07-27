@@ -91,3 +91,13 @@ entrypoint = "./functions/mcp/index.ts"
 verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/storage-gc/index.ts"
+
+[functions.luna-whatsapp-batch-buffer]
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/luna-whatsapp-batch-buffer/index.ts"
+
+[functions.luna-whatsapp-batch-flush]
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/luna-whatsapp-batch-flush/index.ts"

@@ -24,6 +24,8 @@ export type OrganizationExtra = {
   default_agent_id?: string;
   media_preprocessing?: PreprocessingConfig;
   error_messages_direction?: "internal" | "outgoing";
+  /** Hours of WhatsApp thread history included in each Luna batch (overrides env). */
+  luna_whatsapp_batch_context_hours?: number;
 };
 
 export type WhatsAppOrganizationAddressExtra = {

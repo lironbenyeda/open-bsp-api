@@ -862,6 +862,62 @@ export type Database = {
           },
         ]
       }
+      luna_whatsapp_batches: {
+        Row: {
+          attempt_count: number
+          contact_address: string
+          created_at: string
+          error_message: string | null
+          flush_at: string
+          id: string
+          idempotency_key: string | null
+          luna_response: Json | null
+          message_ids: string[]
+          organization_id: string
+          service: Database["public"]["Enums"]["service"]
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempt_count?: number
+          contact_address: string
+          created_at?: string
+          error_message?: string | null
+          flush_at: string
+          id?: string
+          idempotency_key?: string | null
+          luna_response?: Json | null
+          message_ids?: string[]
+          organization_id: string
+          service?: Database["public"]["Enums"]["service"]
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempt_count?: number
+          contact_address?: string
+          created_at?: string
+          error_message?: string | null
+          flush_at?: string
+          id?: string
+          idempotency_key?: string | null
+          luna_response?: Json | null
+          message_ids?: string[]
+          organization_id?: string
+          service?: Database["public"]["Enums"]["service"]
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "luna_whatsapp_batches_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           agent_id: string | null
@@ -1164,6 +1220,16 @@ export type Database = {
           p_until?: string
         }
         Returns: Json
+      }
+      luna_whatsapp_batch_enqueue_message: {
+        Args: {
+          p_contact_address: string
+          p_debounce_seconds?: number
+          p_message_id: string
+          p_organization_id: string
+          p_service?: Database["public"]["Enums"]["service"]
+        }
+        Returns: string
       }
       member_self_update_rules: {
         Args: {
