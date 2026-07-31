@@ -17,6 +17,7 @@ export type LunaRecentMessagesPolicy = {
 };
 
 export type LunaRecentMessage = {
+  id?: string;
   direction: "incoming" | "outgoing";
   timestamp: string;
   kind: "text" | "image" | "audio" | "document" | "video" | "other";
@@ -24,10 +25,10 @@ export type LunaRecentMessage = {
   mimeType?: string;
   base64Data?: string | null;
   fileName?: string;
-  externalId?: string | null;
 };
 
 export type LunaBatchPart = {
+  id?: string;
   kind: "text" | "image" | "audio";
   text?: string;
   mimeType?: string;
@@ -132,11 +133,11 @@ async function messageToLunaRecent(
 ): Promise<LunaRecentMessage> {
   const row = normalizeMessageRow(message);
   const base = {
+    ...(row.external_id ? { id: row.external_id } : {}),
     direction: row.direction === "outgoing"
       ? "outgoing" as const
       : "incoming" as const,
     timestamp: row.timestamp,
-    externalId: row.external_id,
   };
 
   const content = row.content as IncomingMessage;
@@ -179,9 +180,10 @@ async function messageToBatchPart(
 ): Promise<LunaBatchPart | LunaBatchPart[] | null> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage;
+  const id = row.external_id || undefined;
 
   if (content.type === "text" && content.text?.trim()) {
-    return { kind: "text", text: content.text.trim() };
+    return { id, kind: "text", text: content.text.trim() };
   }
 
   if (content.type !== "file" || !SUPPORTED_FILE_KINDS.has(content.kind)) {
@@ -195,6 +197,7 @@ async function messageToBatchPart(
   if (!base64Data) return null;
 
   return {
+    id,
     kind: partKind,
     mimeType: content.file.mime_type,
     base64Data,
