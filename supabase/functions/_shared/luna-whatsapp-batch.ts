@@ -28,7 +28,7 @@ export type LunaRecentMessage = {
 };
 
 export type LunaBatchPart = {
-  id?: string;
+  id: string;
   kind: "text" | "image" | "audio";
   text?: string;
   mimeType?: string;
@@ -42,7 +42,6 @@ export type LunaWhatsAppBatchPayload = {
   receivedAt: string;
   contextHours: number;
   recentMessagesPolicy: LunaRecentMessagesPolicy;
-  externalMessageIds: string[];
   recentMessages: LunaRecentMessage[];
   batchParts: LunaBatchPart[];
 };
@@ -180,7 +179,14 @@ async function messageToBatchPart(
 ): Promise<LunaBatchPart | LunaBatchPart[] | null> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage;
-  const id = row.external_id || undefined;
+  // Luna requires batchParts[].id; skip rather than 422 when WhatsApp id is missing.
+  if (!row.external_id) {
+    log.warn("Skipping Luna batch part without external_id", {
+      messageId: row.id,
+    });
+    return null;
+  }
+  const id = row.external_id;
 
   if (content.type === "text" && content.text?.trim()) {
     return { id, kind: "text", text: content.text.trim() };
@@ -260,10 +266,6 @@ export async function buildLunaWhatsAppBatchPayload(
     else batchParts.push(part);
   }
 
-  const externalMessageIds = (batchMessages ?? [])
-    .map((m) => m.external_id)
-    .filter((id): id is string => Boolean(id));
-
   const sortedIds = [...batchMessageIds].sort();
   const idempotencyKey = `${input.batch.organization_id}:${
     normalizeSenderPhone(input.batch.contact_address)
@@ -275,7 +277,6 @@ export async function buildLunaWhatsAppBatchPayload(
     receivedAt: new Date().toISOString(),
     contextHours,
     recentMessagesPolicy: policy,
-    externalMessageIds,
     recentMessages: recent,
     batchParts,
   };
