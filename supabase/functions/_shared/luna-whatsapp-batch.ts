@@ -25,6 +25,8 @@ export type LunaRecentMessage = {
   mimeType?: string;
   base64Data?: string | null;
   fileName?: string;
+  /** WhatsApp message id (WAMID) this message replies to, when present. */
+  replyToId?: string;
 };
 
 export type LunaBatchPart = {
@@ -34,6 +36,8 @@ export type LunaBatchPart = {
   mimeType?: string;
   base64Data?: string;
   fileName?: string;
+  /** WhatsApp message id (WAMID) this part replies to, when present. */
+  replyToId?: string;
 };
 
 export type LunaWhatsAppBatchPayload = {
@@ -125,21 +129,26 @@ async function fileToBase64(
   }
 }
 
+function replyToIdFromContent(content: IncomingMessage): string | undefined {
+  return content.re_message_id || undefined;
+}
+
 async function messageToLunaRecent(
   client: SupabaseClient<Database>,
   message: MessageRow,
   opts: { includeMedia: boolean },
 ): Promise<LunaRecentMessage> {
   const row = normalizeMessageRow(message);
+  const content = row.content as IncomingMessage;
+  const replyToId = replyToIdFromContent(content);
   const base = {
     ...(row.external_id ? { id: row.external_id } : {}),
     direction: row.direction === "outgoing"
       ? "outgoing" as const
       : "incoming" as const,
     timestamp: row.timestamp,
+    ...(replyToId && { replyToId }),
   };
-
-  const content = row.content as IncomingMessage;
 
   if (content.type === "text") {
     return {
@@ -187,9 +196,11 @@ async function messageToBatchPart(
     return null;
   }
   const id = row.external_id;
+  const replyToId = replyToIdFromContent(content);
+  const replyFields = replyToId ? { replyToId } : {};
 
   if (content.type === "text" && content.text?.trim()) {
-    return { id, kind: "text", text: content.text.trim() };
+    return { id, kind: "text", text: content.text.trim(), ...replyFields };
   }
 
   if (content.type !== "file" || !SUPPORTED_FILE_KINDS.has(content.kind)) {
@@ -209,6 +220,7 @@ async function messageToBatchPart(
     base64Data,
     fileName: content.file.name,
     text: content.text?.trim() || undefined,
+    ...replyFields,
   };
 }
 
@@ -249,11 +261,53 @@ export async function buildLunaWhatsAppBatchPayload(
     ],
   );
 
+  // Reply targets for this batch. Prefer messages already in the time window;
+  // only query DB for ids that are missing (one batched lookup).
+  const repliedToIds = new Set<string>();
+  for (const message of batchMessages ?? []) {
+    const content = normalizeMessageRow(message).content as IncomingMessage;
+    const replyToId = replyToIdFromContent(content);
+    if (replyToId) repliedToIds.add(replyToId);
+  }
+
+  const recentRows = [...(recentMessages ?? [])];
+  const recentExternalIds = new Set(
+    recentRows.map((m) => m.external_id).filter((id): id is string =>
+      Boolean(id)
+    ),
+  );
+  const missingReplyToIds = [...repliedToIds].filter((id) =>
+    !recentExternalIds.has(id)
+  );
+
+  if (missingReplyToIds.length > 0) {
+    const { data: replyTargets } = await client
+      .from("messages")
+      .select()
+      .eq("organization_id", input.batch.organization_id)
+      .eq("contact_address", input.batch.contact_address)
+      .eq("service", input.batch.service)
+      .in("external_id", missingReplyToIds)
+      .throwOnError();
+
+    for (const row of replyTargets ?? []) {
+      recentRows.push(row);
+      if (row.external_id) recentExternalIds.add(row.external_id);
+    }
+
+    recentRows.sort((a, b) =>
+      a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
+    );
+  }
+
+  // Include media bytes for quoted messages (in-window or fetched), so Luna can
+  // resolve image/audio/doc quotes even when policy is batch_only.
   const includeMediaInRecent = policy.includeMedia === "all_in_window";
   const recent = await Promise.all(
-    (recentMessages ?? []).map((message) =>
+    recentRows.map((message) =>
       messageToLunaRecent(client, message, {
-        includeMedia: includeMediaInRecent,
+        includeMedia: includeMediaInRecent ||
+          Boolean(message.external_id && repliedToIds.has(message.external_id)),
       })
     ),
   );
