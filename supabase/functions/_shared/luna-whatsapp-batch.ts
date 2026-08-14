@@ -133,6 +133,16 @@ function replyToIdFromContent(content: IncomingMessage): string | undefined {
   return content.re_message_id || undefined;
 }
 
+function collectReplyToIds(rows: MessageRow[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of rows) {
+    const content = normalizeMessageRow(message).content as IncomingMessage;
+    const replyToId = replyToIdFromContent(content);
+    if (replyToId) ids.add(replyToId);
+  }
+  return ids;
+}
+
 async function messageToLunaRecent(
   client: SupabaseClient<Database>,
   message: MessageRow,
@@ -261,26 +271,28 @@ export async function buildLunaWhatsAppBatchPayload(
     ],
   );
 
-  // Reply targets for this batch. Prefer messages already in the time window;
-  // only query DB for ids that are missing (one batched lookup).
-  const repliedToIds = new Set<string>();
-  for (const message of batchMessages ?? []) {
-    const content = normalizeMessageRow(message).content as IncomingMessage;
-    const replyToId = replyToIdFromContent(content);
-    if (replyToId) repliedToIds.add(replyToId);
-  }
-
+  // Any message we send Luna (batch or recent history) that has replyToId
+  // should also include that quoted message in recentMessages. Prefer rows
+  // already in the time window; fetch only missing ids (batched).
   const recentRows = [...(recentMessages ?? [])];
   const recentExternalIds = new Set(
     recentRows.map((m) => m.external_id).filter((id): id is string =>
       Boolean(id)
     ),
   );
-  const missingReplyToIds = [...repliedToIds].filter((id) =>
-    !recentExternalIds.has(id)
-  );
+  const repliedToIds = collectReplyToIds([
+    ...(batchMessages ?? []),
+    ...recentRows,
+  ]);
+  const lookupAttempted = new Set<string>();
 
-  if (missingReplyToIds.length > 0) {
+  for (let pass = 0; pass < 3; pass++) {
+    const missingReplyToIds = [...repliedToIds].filter((id) =>
+      !recentExternalIds.has(id) && !lookupAttempted.has(id)
+    );
+    if (missingReplyToIds.length === 0) break;
+    for (const id of missingReplyToIds) lookupAttempted.add(id);
+
     const { data: replyTargets } = await client
       .from("messages")
       .select()
@@ -290,15 +302,19 @@ export async function buildLunaWhatsAppBatchPayload(
       .in("external_id", missingReplyToIds)
       .throwOnError();
 
-    for (const row of replyTargets ?? []) {
+    const fetched = replyTargets ?? [];
+    if (fetched.length === 0) break;
+
+    for (const row of fetched) {
       recentRows.push(row);
       if (row.external_id) recentExternalIds.add(row.external_id);
     }
-
-    recentRows.sort((a, b) =>
-      a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
-    );
+    for (const id of collectReplyToIds(fetched)) repliedToIds.add(id);
   }
+
+  recentRows.sort((a, b) =>
+    a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
+  );
 
   // Include media bytes for quoted messages (in-window or fetched), so Luna can
   // resolve image/audio/doc quotes even when policy is batch_only.
