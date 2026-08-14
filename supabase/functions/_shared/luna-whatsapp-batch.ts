@@ -27,6 +27,8 @@ export type LunaRecentMessage = {
   fileName?: string;
   /** WhatsApp message id (WAMID) this message replies to, when present. */
   replyToId?: string;
+  /** True when the WhatsApp message was forwarded. */
+  forwarded?: boolean;
 };
 
 export type LunaBatchPart = {
@@ -38,6 +40,8 @@ export type LunaBatchPart = {
   fileName?: string;
   /** WhatsApp message id (WAMID) this part replies to, when present. */
   replyToId?: string;
+  /** True when the WhatsApp message was forwarded. */
+  forwarded?: boolean;
 };
 
 export type LunaWhatsAppBatchPayload = {
@@ -133,6 +137,17 @@ function replyToIdFromContent(content: IncomingMessage): string | undefined {
   return content.re_message_id || undefined;
 }
 
+function lunaContextFields(content: IncomingMessage): {
+  replyToId?: string;
+  forwarded?: boolean;
+} {
+  const replyToId = replyToIdFromContent(content);
+  return {
+    ...(replyToId && { replyToId }),
+    ...(content.forwarded && { forwarded: true as const }),
+  };
+}
+
 function collectReplyToIds(rows: MessageRow[]): Set<string> {
   const ids = new Set<string>();
   for (const message of rows) {
@@ -150,14 +165,13 @@ async function messageToLunaRecent(
 ): Promise<LunaRecentMessage> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage;
-  const replyToId = replyToIdFromContent(content);
   const base = {
     ...(row.external_id ? { id: row.external_id } : {}),
     direction: row.direction === "outgoing"
       ? "outgoing" as const
       : "incoming" as const,
     timestamp: row.timestamp,
-    ...(replyToId && { replyToId }),
+    ...lunaContextFields(content),
   };
 
   if (content.type === "text") {
@@ -206,11 +220,10 @@ async function messageToBatchPart(
     return null;
   }
   const id = row.external_id;
-  const replyToId = replyToIdFromContent(content);
-  const replyFields = replyToId ? { replyToId } : {};
+  const contextFields = lunaContextFields(content);
 
   if (content.type === "text" && content.text?.trim()) {
-    return { id, kind: "text", text: content.text.trim(), ...replyFields };
+    return { id, kind: "text", text: content.text.trim(), ...contextFields };
   }
 
   if (content.type !== "file" || !SUPPORTED_FILE_KINDS.has(content.kind)) {
@@ -230,7 +243,7 @@ async function messageToBatchPart(
     base64Data,
     fileName: content.file.name,
     text: content.text?.trim() || undefined,
-    ...replyFields,
+    ...contextFields,
   };
 }
 
