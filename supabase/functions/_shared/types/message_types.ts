@@ -4,6 +4,7 @@ import type {
   Contact,
   InteractiveMessage,
   Location,
+  NfmReplyData,
   Order,
   UnsupportedMessage,
   WhatsAppReferral,
@@ -162,6 +163,26 @@ type InteractivePart = DataPart<
 
 type ButtonPart = DataPart<"button", ButtonMessage["button"]>;
 
+export type FlowMessageData = {
+  body: string;
+  header?: string;
+  footer?: string;
+  flow_cta: string;
+  flow_id?: string;
+  flow_name?: string;
+  flow_token?: string;
+  flow_action?: "navigate" | "data_exchange";
+  flow_action_payload?: {
+    screen?: string;
+    data?: Record<string, unknown>;
+  };
+  mode?: "draft" | "published";
+};
+
+type FlowPart = DataPart<"flow", FlowMessageData>;
+
+type FlowReplyPart = DataPart<"flow-reply", NfmReplyData>;
+
 type TemplatePart = DataPart<"template", Template>;
 
 type MediaPlaceholderPart = DataPart<
@@ -236,6 +257,7 @@ export type IncomingMessage =
     | OrderPart
     | InteractivePart
     | ButtonPart
+    | FlowReplyPart
     | MediaPlaceholderPart
     | UnsupportedPart
     | ReferralPart
@@ -260,4 +282,11 @@ export type OutgoingMessage =
     forwarded?: boolean;
   }
   & TaskInfo
-  & (TextPart | FilePart | ContactsPart | LocationPart | TemplatePart);
+  & (
+    | TextPart
+    | FilePart
+    | ContactsPart
+    | LocationPart
+    | TemplatePart
+    | FlowPart
+  );

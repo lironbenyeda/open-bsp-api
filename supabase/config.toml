@@ -101,3 +101,8 @@ entrypoint = "./functions/luna-whatsapp-batch-buffer/index.ts"
 verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/luna-whatsapp-batch-flush/index.ts"
+
+[functions.whatsapp-flow-endpoint]
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/whatsapp-flow-endpoint/index.ts"

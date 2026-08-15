@@ -162,7 +162,7 @@ async function messageToLunaRecent(
   client: SupabaseClient<Database>,
   message: MessageRow,
   opts: { includeMedia: boolean },
-): Promise<LunaRecentMessage> {
+): Promise<LunaRecentMessage | null> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage;
   const base = {
@@ -173,6 +173,10 @@ async function messageToLunaRecent(
     timestamp: row.timestamp,
     ...lunaContextFields(content),
   };
+
+  if (content.type === "data" && content.kind === "flow-reply") {
+    return null;
+  }
 
   if (content.type === "text") {
     return {
@@ -332,14 +336,14 @@ export async function buildLunaWhatsAppBatchPayload(
   // Include media bytes for quoted messages (in-window or fetched), so Luna can
   // resolve image/audio/doc quotes even when policy is batch_only.
   const includeMediaInRecent = policy.includeMedia === "all_in_window";
-  const recent = await Promise.all(
+  const recent = (await Promise.all(
     recentRows.map((message) =>
       messageToLunaRecent(client, message, {
         includeMedia: includeMediaInRecent ||
           Boolean(message.external_id && repliedToIds.has(message.external_id)),
       })
     ),
-  );
+  )).filter((row): row is LunaRecentMessage => row !== null);
 
   const batchParts: LunaBatchPart[] = [];
   for (const message of batchMessages ?? []) {
@@ -616,6 +620,8 @@ export function shouldEnqueueLunaWhatsAppBatch(message: MessageRow): boolean {
   if (message.direction !== "incoming") return false;
   if (message.service !== "whatsapp") return false;
   if (!message.contact_address) return false;
+  const content = message.content as IncomingMessage;
+  if (content.type === "data" && content.kind === "flow-reply") return false;
   return true;
 }
 

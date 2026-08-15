@@ -467,11 +467,12 @@ export async function sendMessage(params: SendMessageParams) {
 
   // Validate content type is actively supported for sending via this tool
   const isSupported = (params.content.type === "text") ||
-    (params.content.type === "data" && params.content.kind === "template");
+    (params.content.type === "data" &&
+      (params.content.kind === "template" || params.content.kind === "flow"));
 
   if (!isSupported) {
     throw new Error(
-      "Unsupported content type. Only 'text' and 'template' (data/kind=template) are supported.",
+      "Unsupported content type. Only 'text', 'template', and 'flow' are supported.",
     );
   }
 

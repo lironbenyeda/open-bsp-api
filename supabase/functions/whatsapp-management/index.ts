@@ -18,6 +18,7 @@ import {
   fetchTemplate,
   listTemplates,
 } from "./templates.ts";
+import { provisionFlowEncryption } from "./flow_encryption.ts";
 import {
   deleteSignup,
   performEmbeddedSignup,
@@ -287,6 +288,31 @@ app.delete(
     );
 
     return c.json(response);
+  },
+);
+
+app.post(
+  "/whatsapp-management/flow-encryption",
+  requireRoles(["admin", "owner"]),
+  async (c) => {
+    const { organization_id, organization_address } = await c.req.json<{
+      organization_id: string;
+      organization_address: string;
+    }>();
+
+    if (!organization_id || !organization_address) {
+      throw new HTTPException(400, {
+        message: "organization_id and organization_address are required",
+      });
+    }
+
+    const result = await provisionFlowEncryption(
+      createUnsecureClient(),
+      organization_id,
+      organization_address,
+    );
+
+    return c.json(result);
   },
 );
 

@@ -60,6 +60,32 @@ export type OutgoingSticker = {
   sticker: { id: string } | { link: string };
 };
 
+export type OutgoingFlow = {
+  type: "interactive";
+  interactive: {
+    type: "flow";
+    header?: { type: "text"; text: string };
+    body: { text: string };
+    footer?: { text: string };
+    action: {
+      name: "flow";
+      parameters: {
+        flow_message_version: "3";
+        flow_cta: string;
+        flow_id?: string;
+        flow_name?: string;
+        flow_token: string;
+        flow_action?: "navigate" | "data_exchange";
+        flow_action_payload?: {
+          screen?: string;
+          data?: Record<string, unknown>;
+        };
+        mode?: "draft" | "published";
+      };
+    };
+  };
+};
+
 //===================================
 // Endpoint message, as sent to the WhatsApp endpoint
 //===================================
@@ -86,6 +112,7 @@ export type EndpointMessage =
     | TemplateMessage
     | OutgoingText
     | OutgoingVideo
+    | OutgoingFlow
   );
 
 export type EndpointMessageResponse = {

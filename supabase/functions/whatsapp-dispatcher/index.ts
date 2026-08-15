@@ -351,6 +351,55 @@ function outgoingMessageToEndpointMessage({
         template: content.data,
       };
     }
+    case "flow": {
+      const data = content.data;
+      if (!data.flow_token) {
+        throw new Error("Flow message requires flow_token");
+      }
+      if (!data.body?.trim()) {
+        throw new Error("Flow message requires body");
+      }
+      if (!data.flow_cta?.trim()) {
+        throw new Error("Flow message requires flow_cta");
+      }
+      if (!data.flow_id && !data.flow_name) {
+        throw new Error(
+          "Flow message requires flow_id or flow_name",
+        );
+      }
+      if (data.flow_id && data.flow_name) {
+        throw new Error(
+          "Flow message cannot set both flow_id and flow_name",
+        );
+      }
+      return {
+        ...baseMessage,
+        type: "interactive",
+        interactive: {
+          type: "flow",
+          ...(data.header
+            ? { header: { type: "text" as const, text: data.header } }
+            : {}),
+          body: { text: markdownToWhatsApp(data.body) },
+          ...(data.footer ? { footer: { text: data.footer } } : {}),
+          action: {
+            name: "flow",
+            parameters: {
+              flow_message_version: "3",
+              flow_cta: data.flow_cta,
+              flow_token: data.flow_token,
+              ...(data.flow_id ? { flow_id: data.flow_id } : {}),
+              ...(data.flow_name ? { flow_name: data.flow_name } : {}),
+              ...(data.flow_action ? { flow_action: data.flow_action } : {}),
+              ...(data.flow_action_payload
+                ? { flow_action_payload: data.flow_action_payload }
+                : {}),
+              ...(data.mode ? { mode: data.mode } : {}),
+            },
+          },
+        },
+      };
+    }
     default: {
       throw new Error(
         `Cannot convert outgoing message of type ${content.type} and kind ${content.kind}`,
