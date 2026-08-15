@@ -6,6 +6,7 @@ import {
   type Database,
   type EditedMessage,
   type IncomingMessage,
+  type Json,
   type MessageInsert,
   type MetaWebhookPayload,
   type OrganizationAddressRow,
@@ -424,6 +425,25 @@ function webhookMessageToIncomingMessage(
     }
 
     case "interactive": {
+      if (message.interactive.type === "nfm_reply") {
+        let response: Json | undefined;
+        try {
+          response = JSON.parse(
+            message.interactive.nfm_reply.response_json,
+          ) as Json;
+        } catch {
+          // leave unparsed; still persist the raw string
+        }
+        return {
+          ...baseMessage,
+          type: "data",
+          kind: "flow-reply",
+          data: {
+            ...message.interactive.nfm_reply,
+            ...(response ? { response } : {}),
+          },
+        };
+      }
       return {
         ...baseMessage,
         type: "data",

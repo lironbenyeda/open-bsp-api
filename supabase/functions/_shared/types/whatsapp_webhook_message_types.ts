@@ -1,5 +1,6 @@
 import type { WebhookError } from "./whatsapp_webhook_payload_types.ts";
 import type { WebhookStatus } from "./status_types.ts";
+import type { Json } from "../db_types.ts";
 
 //===================================
 // Webhook Message, as received from WhatsApp
@@ -183,7 +184,8 @@ export type ButtonMessage = {
   };
 };
 
-// This message type is produced when the user interacts with an interactive message button or list option.
+// This message type is produced when the user interacts with an interactive
+// message button, list option, or completes a WhatsApp Flow.
 export type InteractiveMessage = {
   type: "interactive";
   interactive:
@@ -191,7 +193,22 @@ export type InteractiveMessage = {
     | {
       type: "list_reply";
       list_reply: { id: string; title: string; description?: string };
+    }
+    | {
+      type: "nfm_reply";
+      nfm_reply: {
+        name: string;
+        body: string;
+        response_json: string;
+      };
     };
+};
+
+export type NfmReplyData = {
+  name: string;
+  body: string;
+  response_json: string;
+  response?: Json;
 };
 
 // ORDER

@@ -37,6 +37,11 @@ export type WhatsAppOrganizationAddressExtra = {
   access_token?: string; // Meta system-user token
   callback_url?: string | null;
   verify_token?: string | null;
+  /** PKCS#8 PEM private key for WhatsApp Flow data-endpoint decryption. */
+  flow_private_key?: string;
+  /** HTTPS URL OpenBSP POSTs decrypted Flow data-exchange JSON to. */
+  flow_data_callback_url?: string | null;
+  flow_public_key_uploaded_at?: string;
 };
 
 export type InstagramOrganizationAddressExtra = {

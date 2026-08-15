@@ -46,6 +46,7 @@ export type {
   Location,
   LocationMessage,
   MediaPlaceholder,
+  NfmReplyData,
   Order,
   OrderMessage,
   ReactionMessage,
@@ -70,6 +71,7 @@ export type {
   OutgoingAudio,
   OutgoingContextInfo,
   OutgoingDocument,
+  OutgoingFlow,
   OutgoingImage,
   OutgoingReaction,
   OutgoingSticker,
@@ -80,6 +82,7 @@ export { MediaTypes } from "./types/message_types.ts";
 export type {
   DataPart,
   FilePart,
+  FlowMessageData,
   IncomingMessage,
   InternalMessage,
   LocalToolInfo,
