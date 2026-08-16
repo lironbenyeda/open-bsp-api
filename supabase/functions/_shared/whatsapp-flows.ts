@@ -91,6 +91,17 @@ function flipIv(iv: Uint8Array): Uint8Array {
   return flipped;
 }
 
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
 /**
  * Meta Flow data API 3.0: RSA-OAEP SHA-256 + AES-128-GCM with a 128-bit IV.
  * node:crypto matches Meta's samples (16-byte GCM IV).
@@ -109,7 +120,7 @@ export function decryptFlowRequest(
       padding: constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: "sha256",
     },
-    Buffer.from(body.encrypted_aes_key, "base64"),
+    decodeBase64(body.encrypted_aes_key),
   ));
 
   const iv = decodeBase64(body.initial_vector);
@@ -119,13 +130,13 @@ export function decryptFlowRequest(
 
   const decipher = createDecipheriv("aes-128-gcm", aesKey, iv);
   decipher.setAuthTag(authTag);
-  const decrypted = Buffer.concat([
-    decipher.update(encryptedBody),
-    decipher.final(),
-  ]);
+  const decrypted = concatBytes(
+    new Uint8Array(decipher.update(encryptedBody)),
+    new Uint8Array(decipher.final()),
+  );
 
   const payload = JSON.parse(
-    decrypted.toString("utf8"),
+    new TextDecoder().decode(decrypted),
   ) as FlowDataExchangeRequest;
   return { payload, aesKey, iv };
 }
@@ -136,12 +147,14 @@ export function encryptFlowResponse(
   iv: Uint8Array,
 ): string {
   const cipher = createCipheriv("aes-128-gcm", aesKey, flipIv(iv));
-  const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(response), "utf8"),
-    cipher.final(),
-    cipher.getAuthTag(),
-  ]);
-  return encrypted.toString("base64");
+  const encrypted = concatBytes(
+    new Uint8Array(cipher.update(new TextEncoder().encode(
+      JSON.stringify(response),
+    ))),
+    new Uint8Array(cipher.final()),
+    new Uint8Array(cipher.getAuthTag()),
+  );
+  return encodeBase64(encrypted);
 }
 
 export async function hmacSha256Hex(
