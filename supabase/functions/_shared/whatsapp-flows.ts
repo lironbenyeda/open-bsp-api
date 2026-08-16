@@ -1,11 +1,5 @@
 import { decodeBase64, encodeBase64 } from "jsr:@std/encoding/base64";
-import {
-  constants,
-  createCipheriv,
-  createDecipheriv,
-  createPublicKey,
-  privateDecrypt,
-} from "node:crypto";
+import { createCipheriv, createDecipheriv, createPublicKey } from "node:crypto";
 
 export type FlowEncryptedRequest = {
   encrypted_flow_data: string;
@@ -102,26 +96,43 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** RSA-OAEP SHA-256. Deno 2.1 node:crypto ignores oaepHash and uses SHA-1. */
+async function decryptAesKey(
+  encryptedAesKeyB64: string,
+  privateKeyPem: string,
+): Promise<Uint8Array> {
+  const pem = privateKeyPem.replaceAll("\\n", "\n").trim();
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToDer(pem) as BufferSource,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["decrypt"],
+  );
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "RSA-OAEP" },
+    key,
+    decodeBase64(encryptedAesKeyB64) as BufferSource,
+  );
+  return new Uint8Array(decrypted);
+}
+
 /**
  * Meta Flow data API 3.0: RSA-OAEP SHA-256 + AES-128-GCM with a 128-bit IV.
- * node:crypto matches Meta's samples (16-byte GCM IV).
+ * AES-GCM stays on node:crypto because Web Crypto rejects Meta's 16-byte IVs.
  */
-export function decryptFlowRequest(
+export async function decryptFlowRequest(
   body: FlowEncryptedRequest,
   privateKeyPem: string,
-): {
+): Promise<{
   payload: FlowDataExchangeRequest;
   aesKey: Uint8Array;
   iv: Uint8Array;
-} {
-  const aesKey = new Uint8Array(privateDecrypt(
-    {
-      key: privateKeyPem,
-      padding: constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha256",
-    },
-    decodeBase64(body.encrypted_aes_key),
-  ));
+}> {
+  const aesKey = await decryptAesKey(
+    body.encrypted_aes_key,
+    privateKeyPem,
+  );
 
   const iv = decodeBase64(body.initial_vector);
   const flowData = decodeBase64(body.encrypted_flow_data);
