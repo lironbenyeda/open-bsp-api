@@ -4,7 +4,7 @@ import {
   authorizeLunaWhatsAppBatchWebhookRequest,
   flushLunaWhatsAppBatchWhenReady,
   isLunaWhatsAppBatchWebhookPayload,
-  lunaWhatsAppBatchDebounceSeconds,
+  lunaWhatsAppBatchDebounceSecondsForMessage,
   runAfterResponse,
   shouldEnqueueLunaWhatsAppBatch,
 } from "../_shared/luna-whatsapp-batch.ts";
@@ -36,7 +36,8 @@ Deno.serve(async (req) => {
   }
 
   const client = createUnsecureClient();
-  const debounceSeconds = lunaWhatsAppBatchDebounceSeconds();
+  // Button/list taps: debounce 0 so Luna is called immediately.
+  const debounceSeconds = lunaWhatsAppBatchDebounceSecondsForMessage(message);
 
   const { data: batchId, error } = await client.rpc(
     "luna_whatsapp_batch_enqueue_message",

@@ -76,6 +76,15 @@ export function lunaWhatsAppBatchDebounceSeconds(): number {
     : DEFAULT_DEBOUNCE_SECONDS;
 }
 
+/** Reply-button / list taps are complete intents — flush without the text debounce. */
+export function lunaWhatsAppBatchDebounceSecondsForMessage(
+  message: MessageRow,
+): number {
+  const content = normalizeMessageRow(message).content as IncomingMessage;
+  if (lunaButtonTapFromContent(content)) return 0;
+  return lunaWhatsAppBatchDebounceSeconds();
+}
+
 export function lunaWhatsAppBatchContextHours(
   org?: OrganizationRow | null,
 ): number {
