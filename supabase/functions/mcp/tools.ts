@@ -437,7 +437,7 @@ export async function sendMessage(params: SendMessageParams) {
     allowedAccounts,
   });
 
-  // Check service window if type is text
+  // Enforce 24h service window for session messages (text, flow, buttons).
   if (params.content.kind !== "template") {
     const { data: lastMsg } = await params.supabase
       .from("messages")
@@ -468,11 +468,13 @@ export async function sendMessage(params: SendMessageParams) {
   // Validate content type is actively supported for sending via this tool
   const isSupported = (params.content.type === "text") ||
     (params.content.type === "data" &&
-      (params.content.kind === "template" || params.content.kind === "flow"));
+      (params.content.kind === "template" ||
+        params.content.kind === "flow" ||
+        params.content.kind === "buttons"));
 
   if (!isSupported) {
     throw new Error(
-      "Unsupported content type. Only 'text', 'template', and 'flow' are supported.",
+      "Unsupported content type. Only 'text', 'template', 'flow', and 'buttons' are supported.",
     );
   }
 
