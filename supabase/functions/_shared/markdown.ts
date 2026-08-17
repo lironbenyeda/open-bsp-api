@@ -63,11 +63,49 @@ function convertMarker(
   return text;
 }
 
+/** Collapse ****text**** / ***text*** to **text**. */
+function normalizeStackedBoldMarkers(text: string): string {
+  return text.replace(/\*{3,}(?![\s*])([\s\S]*?)(?<![\s*])\*{3,}/g, "**$1**");
+}
+
+/** Repair *text** / **text* (composer stacking leftovers) to **text**. */
+function repairUnbalancedBoldMarkers(text: string): string {
+  text = text.replace(
+    /(^|[^*])\*(?!\*)(?![\s*])([^*]+?)(?<![\s*])\*\*/g,
+    (_, pre, inner) => `${pre}**${inner}**`,
+  );
+  text = text.replace(
+    /\*\*(?![\s*])([^*]+?)(?<![\s*])\*(?!\*)/g,
+    "**$1**",
+  );
+  return text;
+}
+
+/**
+ * WhatsApp only bolds within a single line. CommonMark/Remarkable allow
+ * **line1\nline2** — convert each line to its own sentinel-wrapped bold.
+ */
+function boldInnerToWhatsAppPerLine(inner: string): string {
+  return inner
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/^(\s*)(.*?)(\s*)$/);
+      if (!match) return line;
+      const [, lead, mid, trail] = match;
+      if (!mid) return line;
+      return `${lead}${BOLD_SENTINEL}${mid}${BOLD_SENTINEL}${trail}`;
+    })
+    .join("\n");
+}
+
 /** Common Markdown → WhatsApp flavor (outbound). */
 export function markdownToWhatsApp(text: string): string {
   try {
     return outsideCode(text, (part) => {
       let processed = part;
+
+      processed = normalizeStackedBoldMarkers(processed);
+      processed = repairUnbalancedBoldMarkers(processed);
 
       // Headers: # Title -> *Title* (via the sentinel so the italic pass
       // below doesn't re-match the stars)
@@ -76,15 +114,16 @@ export function markdownToWhatsApp(text: string): string {
         `${BOLD_SENTINEL}$1${BOLD_SENTINEL}`,
       );
 
-      // Bold: **text** / __text__ -> *text*, via a sentinel so the italic
-      // pass below doesn't re-match the stars.
+      // Bold: **text** / __text__ -> *text* per line (WA cannot bold across \n).
+      // Use [\s\S] so a single CommonMark span that contains newlines is still
+      // found, then split into per-line markers.
       processed = processed.replace(
-        /\*\*(?![\s*])(.+?)(?<![\s*])\*\*/g,
-        `${BOLD_SENTINEL}$1${BOLD_SENTINEL}`,
+        /\*\*(?![\s*])([\s\S]+?)(?<![\s*])\*\*/g,
+        (_, inner) => boldInnerToWhatsAppPerLine(inner),
       );
       processed = processed.replace(
-        /__(?![\s_])(.+?)(?<![\s_])__/g,
-        `${BOLD_SENTINEL}$1${BOLD_SENTINEL}`,
+        /__(?![\s_])([\s\S]+?)(?<![\s_])__/g,
+        (_, inner) => boldInnerToWhatsAppPerLine(inner),
       );
 
       // Italic: *text* -> _text_ (markdown _text_ is already valid in WA)

@@ -86,6 +86,22 @@ export type OutgoingFlow = {
   };
 };
 
+export type OutgoingReplyButtons = {
+  type: "interactive";
+  interactive: {
+    type: "button";
+    header?: { type: "text"; text: string };
+    body: { text: string };
+    footer?: { text: string };
+    action: {
+      buttons: {
+        type: "reply";
+        reply: { id: string; title: string };
+      }[];
+    };
+  };
+};
+
 //===================================
 // Endpoint message, as sent to the WhatsApp endpoint
 //===================================
@@ -113,6 +129,7 @@ export type EndpointMessage =
     | OutgoingText
     | OutgoingVideo
     | OutgoingFlow
+    | OutgoingReplyButtons
   );
 
 export type EndpointMessageResponse = {

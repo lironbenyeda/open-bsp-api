@@ -4,10 +4,12 @@ import ky from "ky";
 import * as log from "./logger.ts";
 import { downloadFromStorage } from "./media.ts";
 import type {
+  ButtonsMessageData,
   Database,
   IncomingMessage,
   MessageRow,
   OrganizationRow,
+  OutgoingMessage,
 } from "./supabase.ts";
 import { type MessageRowV0, toV1 } from "./messages-v0.ts";
 
@@ -20,8 +22,10 @@ export type LunaRecentMessage = {
   id?: string;
   direction: "incoming" | "outgoing";
   timestamp: string;
-  kind: "text" | "image" | "audio" | "document" | "video" | "other";
+  kind: "text" | "image" | "audio" | "document" | "video" | "button" | "other";
   text?: string;
+  /** Reply-button / list / template-button id when `kind` is `button`. */
+  buttonId?: string;
   mimeType?: string;
   base64Data?: string | null;
   fileName?: string;
@@ -33,8 +37,10 @@ export type LunaRecentMessage = {
 
 export type LunaBatchPart = {
   id: string;
-  kind: "text" | "image" | "audio";
+  kind: "text" | "image" | "audio" | "button";
   text?: string;
+  /** Reply-button / list / template-button id when `kind` is `button`. */
+  buttonId?: string;
   mimeType?: string;
   base64Data?: string;
   fileName?: string;
@@ -133,11 +139,54 @@ async function fileToBase64(
   }
 }
 
-function replyToIdFromContent(content: IncomingMessage): string | undefined {
+function replyToIdFromContent(
+  content: IncomingMessage | OutgoingMessage,
+): string | undefined {
   return content.re_message_id || undefined;
 }
 
-function lunaContextFields(content: IncomingMessage): {
+function lunaButtonTapFromContent(
+  content: IncomingMessage,
+): { buttonId: string; text: string } | null {
+  if (content.type !== "data") return null;
+
+  if (content.kind === "button") {
+    const payload = content.data.payload?.trim() ?? "";
+    const text = content.data.text?.trim() ?? "";
+    if (!payload && !text) return null;
+    return { buttonId: payload || text, text: text || payload };
+  }
+
+  if (content.kind === "interactive") {
+    const data = content.data;
+    if (data.type === "button_reply") {
+      const buttonId = data.button_reply.id?.trim() ?? "";
+      const text = data.button_reply.title?.trim() ?? "";
+      if (!buttonId && !text) return null;
+      return { buttonId: buttonId || text, text: text || buttonId };
+    }
+    if (data.type === "list_reply") {
+      const buttonId = data.list_reply.id?.trim() ?? "";
+      const text = data.list_reply.title?.trim() ?? "";
+      if (!buttonId && !text) return null;
+      return { buttonId: buttonId || text, text: text || buttonId };
+    }
+  }
+
+  return null;
+}
+
+function lunaOutgoingButtonsText(data: ButtonsMessageData): string {
+  const body = data.body?.trim() ?? "";
+  const titles = (data.buttons ?? [])
+    .map((button) => button.title?.trim())
+    .filter((title): title is string => Boolean(title));
+  if (titles.length === 0) return body;
+  const labels = `[${titles.join(" / ")}]`;
+  return body ? `${body}\n${labels}` : labels;
+}
+
+function lunaContextFields(content: IncomingMessage | OutgoingMessage): {
   replyToId?: string;
   forwarded?: boolean;
 } {
@@ -164,7 +213,7 @@ async function messageToLunaRecent(
   opts: { includeMedia: boolean },
 ): Promise<LunaRecentMessage | null> {
   const row = normalizeMessageRow(message);
-  const content = row.content as IncomingMessage;
+  const content = row.content as IncomingMessage | OutgoingMessage;
   const base = {
     ...(row.external_id ? { id: row.external_id } : {}),
     direction: row.direction === "outgoing"
@@ -176,6 +225,26 @@ async function messageToLunaRecent(
 
   if (content.type === "data" && content.kind === "flow-reply") {
     return null;
+  }
+
+  const tap = content.type === "data" && content.kind !== "buttons"
+    ? lunaButtonTapFromContent(content as IncomingMessage)
+    : null;
+  if (tap) {
+    return {
+      ...base,
+      kind: "button",
+      text: tap.text,
+      buttonId: tap.buttonId,
+    };
+  }
+
+  if (content.type === "data" && content.kind === "buttons") {
+    return {
+      ...base,
+      kind: "text",
+      text: lunaOutgoingButtonsText(content.data),
+    };
   }
 
   if (content.type === "text") {
@@ -228,6 +297,17 @@ async function messageToBatchPart(
 
   if (content.type === "text" && content.text?.trim()) {
     return { id, kind: "text", text: content.text.trim(), ...contextFields };
+  }
+
+  const tap = lunaButtonTapFromContent(content);
+  if (tap) {
+    return {
+      id,
+      kind: "button",
+      text: tap.text,
+      buttonId: tap.buttonId,
+      ...contextFields,
+    };
   }
 
   if (content.type !== "file" || !SUPPORTED_FILE_KINDS.has(content.kind)) {
