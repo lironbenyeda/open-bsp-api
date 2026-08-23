@@ -26,6 +26,12 @@ export type OrganizationExtra = {
   error_messages_direction?: "internal" | "outgoing";
   /** Hours of WhatsApp thread history included in each Luna batch (overrides env). */
   luna_whatsapp_batch_context_hours?: number;
+  /**
+   * Minimum recent messages included in each Luna batch even outside the hours
+   * window (overrides env). Union with hours: message is included if in last N
+   * hours OR among the last K messages.
+   */
+  luna_whatsapp_batch_context_max_messages?: number;
 };
 
 export type WhatsAppOrganizationAddressExtra = {
