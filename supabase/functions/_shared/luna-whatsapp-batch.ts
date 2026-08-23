@@ -15,6 +15,8 @@ import { type MessageRowV0, toV1 } from "./messages-v0.ts";
 
 export type LunaRecentMessagesPolicy = {
   hours: number;
+  /** Floor of recent messages kept even when older than `hours`. */
+  maxMessages: number;
   includeMedia: "batch_only" | "all_in_window";
 };
 
@@ -55,6 +57,7 @@ export type LunaWhatsAppBatchPayload = {
   senderPhone: string;
   receivedAt: string;
   contextHours: number;
+  contextMaxMessages: number;
   recentMessagesPolicy: LunaRecentMessagesPolicy;
   recentMessages: LunaRecentMessage[];
   batchParts: LunaBatchPart[];
@@ -64,6 +67,7 @@ export type LunaWhatsAppBatchRow =
   Database["public"]["Tables"]["luna_whatsapp_batches"]["Row"];
 
 const DEFAULT_CONTEXT_HOURS = 3;
+const DEFAULT_CONTEXT_MAX_MESSAGES = 20;
 const DEFAULT_DEBOUNCE_SECONDS = 7;
 const MAX_FLUSH_ATTEMPTS = 5;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
@@ -96,6 +100,21 @@ export function lunaWhatsAppBatchContextHours(
   const raw = Deno.env.get("LUNA_WHATSAPP_BATCH_CONTEXT_HOURS");
   const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_CONTEXT_HOURS;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONTEXT_HOURS;
+}
+
+export function lunaWhatsAppBatchContextMaxMessages(
+  org?: OrganizationRow | null,
+): number {
+  const orgMax = (org?.extra as {
+    luna_whatsapp_batch_context_max_messages?: number;
+  } | null)?.luna_whatsapp_batch_context_max_messages;
+  if (typeof orgMax === "number" && orgMax > 0) return orgMax;
+
+  const raw = Deno.env.get("LUNA_WHATSAPP_BATCH_CONTEXT_MAX_MESSAGES");
+  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_CONTEXT_MAX_MESSAGES;
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_CONTEXT_MAX_MESSAGES;
 }
 
 export function normalizeSenderPhone(contactAddress: string): string {
@@ -348,8 +367,12 @@ export async function buildLunaWhatsAppBatchPayload(
   },
 ): Promise<LunaWhatsAppBatchPayload> {
   const contextHours = lunaWhatsAppBatchContextHours(input.organization);
+  const contextMaxMessages = lunaWhatsAppBatchContextMaxMessages(
+    input.organization,
+  );
   const policy: LunaRecentMessagesPolicy = {
     hours: contextHours,
+    maxMessages: contextMaxMessages,
     includeMedia: "batch_only",
   };
 
@@ -357,30 +380,54 @@ export async function buildLunaWhatsAppBatchPayload(
   const since = new Date(Date.now() - contextHours * 60 * 60 * 1000)
     .toISOString();
 
-  const [{ data: batchMessages }, { data: recentMessages }] = await Promise.all(
-    [
-      client
-        .from("messages")
-        .select()
-        .in("id", batchMessageIds)
-        .order("timestamp", { ascending: true })
-        .throwOnError(),
-      client
-        .from("messages")
-        .select()
-        .eq("organization_id", input.batch.organization_id)
-        .eq("contact_address", input.batch.contact_address)
-        .eq("service", input.batch.service)
-        .gt("timestamp", since)
-        .order("timestamp", { ascending: true })
-        .throwOnError(),
-    ],
-  );
+  const threadFilter = {
+    organization_id: input.batch.organization_id,
+    contact_address: input.batch.contact_address,
+    service: input.batch.service,
+  };
+
+  // Union: messages in the last N hours OR among the last K for this thread.
+  // Hours covers dense recent chat; maxMessages covers delayed replies.
+  const [
+    { data: batchMessages },
+    { data: recentByHours },
+    { data: recentByCount },
+  ] = await Promise.all([
+    client
+      .from("messages")
+      .select()
+      .in("id", batchMessageIds)
+      .order("timestamp", { ascending: true })
+      .throwOnError(),
+    client
+      .from("messages")
+      .select()
+      .eq("organization_id", threadFilter.organization_id)
+      .eq("contact_address", threadFilter.contact_address)
+      .eq("service", threadFilter.service)
+      .gt("timestamp", since)
+      .order("timestamp", { ascending: true })
+      .throwOnError(),
+    client
+      .from("messages")
+      .select()
+      .eq("organization_id", threadFilter.organization_id)
+      .eq("contact_address", threadFilter.contact_address)
+      .eq("service", threadFilter.service)
+      .order("timestamp", { ascending: false })
+      .limit(contextMaxMessages)
+      .throwOnError(),
+  ]);
+
+  const recentById = new Map<string, MessageRow>();
+  for (const row of [...(recentByHours ?? []), ...(recentByCount ?? [])]) {
+    recentById.set(row.id, row);
+  }
 
   // Any message we send Luna (batch or recent history) that has replyToId
   // should also include that quoted message in recentMessages. Prefer rows
-  // already in the time window; fetch only missing ids (batched).
-  const recentRows = [...(recentMessages ?? [])];
+  // already selected; fetch only missing ids (batched).
+  const recentRows = [...recentById.values()];
   const recentExternalIds = new Set(
     recentRows.map((m) => m.external_id).filter((id): id is string =>
       Boolean(id)
@@ -402,9 +449,9 @@ export async function buildLunaWhatsAppBatchPayload(
     const { data: replyTargets } = await client
       .from("messages")
       .select()
-      .eq("organization_id", input.batch.organization_id)
-      .eq("contact_address", input.batch.contact_address)
-      .eq("service", input.batch.service)
+      .eq("organization_id", threadFilter.organization_id)
+      .eq("contact_address", threadFilter.contact_address)
+      .eq("service", threadFilter.service)
       .in("external_id", missingReplyToIds)
       .throwOnError();
 
@@ -452,6 +499,7 @@ export async function buildLunaWhatsAppBatchPayload(
     senderPhone: normalizeSenderPhone(input.batch.contact_address),
     receivedAt: new Date().toISOString(),
     contextHours,
+    contextMaxMessages,
     recentMessagesPolicy: policy,
     recentMessages: recent,
     batchParts,
