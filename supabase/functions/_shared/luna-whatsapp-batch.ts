@@ -20,14 +20,37 @@ export type LunaRecentMessagesPolicy = {
   includeMedia: "batch_only" | "all_in_window";
 };
 
+/** Shared contact card for Luna batchParts / recentMessages (no vCard blob). */
+export type LunaContact = {
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  company?: string;
+  phones: Array<{
+    phone: string;
+    type?: string;
+    waId?: string;
+  }>;
+};
+
 export type LunaRecentMessage = {
   id?: string;
   direction: "incoming" | "outgoing";
   timestamp: string;
-  kind: "text" | "image" | "audio" | "document" | "video" | "button" | "other";
+  kind:
+    | "text"
+    | "image"
+    | "audio"
+    | "document"
+    | "video"
+    | "button"
+    | "contacts"
+    | "other";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
   buttonId?: string;
+  /** Shared WhatsApp contact cards when `kind` is `contacts`. */
+  contacts?: LunaContact[];
   mimeType?: string;
   base64Data?: string | null;
   fileName?: string;
@@ -39,10 +62,12 @@ export type LunaRecentMessage = {
 
 export type LunaBatchPart = {
   id: string;
-  kind: "text" | "image" | "audio" | "button";
+  kind: "text" | "image" | "audio" | "button" | "contacts";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
   buttonId?: string;
+  /** Shared WhatsApp contact cards when `kind` is `contacts`. */
+  contacts?: LunaContact[];
   mimeType?: string;
   base64Data?: string;
   fileName?: string;
@@ -214,6 +239,84 @@ function lunaOutgoingButtonsText(data: ButtonsMessageData): string {
   return body ? `${body}\n${labels}` : labels;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringField(
+  record: Record<string, unknown> | null,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Normalize WhatsApp contact cards; drop vCard blobs (large / unused by Luna). */
+export function lunaContactsFromContentData(
+  data: unknown,
+): LunaContact[] {
+  if (!Array.isArray(data)) return [];
+
+  const contacts: LunaContact[] = [];
+  for (const item of data) {
+    const row = asRecord(item);
+    if (!row) continue;
+
+    const nameObj = asRecord(row.name);
+    const orgObj = asRecord(row.org);
+    const formattedName = stringField(nameObj, "formatted_name");
+    const firstName = stringField(nameObj, "first_name");
+    const lastName = stringField(nameObj, "last_name");
+    const company = stringField(orgObj, "company");
+
+    const phones: LunaContact["phones"] = [];
+    if (Array.isArray(row.phones)) {
+      for (const phoneRow of row.phones) {
+        const phoneObj = asRecord(phoneRow);
+        const phone = stringField(phoneObj, "phone");
+        if (!phone) continue;
+        const type = stringField(phoneObj, "type");
+        const waId = stringField(phoneObj, "wa_id");
+        phones.push({
+          phone,
+          ...(type && { type }),
+          ...(waId && { waId }),
+        });
+      }
+    }
+
+    const name = formattedName ||
+      [firstName, lastName].filter(Boolean).join(" ") ||
+      company ||
+      phones[0]?.phone;
+    if (!name) continue;
+
+    contacts.push({
+      name,
+      ...(firstName && { firstName }),
+      ...(lastName && { lastName }),
+      ...(company && { company }),
+      phones,
+    });
+  }
+  return contacts;
+}
+
+export function lunaContactsText(contacts: LunaContact[]): string {
+  const lines = contacts.map((contact) => {
+    const phoneBits = contact.phones.map((p) => {
+      const wa = p.waId ? ` (wa:${p.waId})` : "";
+      return `${p.phone}${wa}`;
+    });
+    const company = contact.company ? ` @ ${contact.company}` : "";
+    const phones = phoneBits.length ? ` — ${phoneBits.join(", ")}` : "";
+    return `${contact.name}${company}${phones}`;
+  });
+  return [`[אנשי קשר]`, ...lines].join("\n");
+}
+
 function lunaContextFields(content: IncomingMessage | OutgoingMessage): {
   replyToId?: string;
   forwarded?: boolean;
@@ -272,6 +375,17 @@ async function messageToLunaRecent(
       ...base,
       kind: "text",
       text: lunaOutgoingButtonsText(content.data),
+    };
+  }
+
+  if (content.type === "data" && content.kind === "contacts") {
+    const contacts = lunaContactsFromContentData(content.data);
+    if (contacts.length === 0) return null;
+    return {
+      ...base,
+      kind: "contacts",
+      contacts,
+      text: lunaContactsText(contacts),
     };
   }
 
@@ -334,6 +448,18 @@ async function messageToBatchPart(
       kind: "button",
       text: tap.text,
       buttonId: tap.buttonId,
+      ...contextFields,
+    };
+  }
+
+  if (content.type === "data" && content.kind === "contacts") {
+    const contacts = lunaContactsFromContentData(content.data);
+    if (contacts.length === 0) return null;
+    return {
+      id,
+      kind: "contacts",
+      contacts,
+      text: lunaContactsText(contacts),
       ...contextFields,
     };
   }
