@@ -102,6 +102,11 @@ verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/luna-whatsapp-batch-flush/index.ts"
 
+[functions.luna-message-status]
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/luna-message-status/index.ts"
+
 [functions.whatsapp-flow-endpoint]
 verify_jwt = false
 import_map = "./functions/deno.json"
