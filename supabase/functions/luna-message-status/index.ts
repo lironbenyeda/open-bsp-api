@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import * as log from "../_shared/logger.ts";
-import { authorizeLunaWhatsAppBatchWebhookRequest } from "../_shared/luna-whatsapp-batch.ts";
 import {
+  createApiClientFromKey,
   createUnsecureClient,
   type IncomingStatus,
   type MessageRow,
@@ -10,13 +10,30 @@ import {
 type LunaMessageStatusRequest = {
   /** WhatsApp message id (wamid) — `batchParts[].id` / `messages.external_id`. */
   external_id: string;
-  /** Optional tenant scope (recommended in multi-tenant setups). */
+  /** Optional; defaults to the org resolved from the API key. */
   organization_id?: string;
   /** Mark the message as read (blue ticks). */
   read?: boolean;
   /** Show a typing indicator (auto-clears ~25s or on reply). */
   typing?: boolean;
 };
+
+/** Same as mcp: `api-key` header, or non-JWT Authorization bearer. */
+function extractApiKey(req: Request): string | null {
+  const headerKey = req.headers.get("api-key")?.trim();
+  if (headerKey) return headerKey;
+
+  const bearer = (req.headers.get("Authorization") ?? "").replace(
+    /^Bearer\s+/i,
+    "",
+  ).trim();
+  if (!bearer) return null;
+
+  // JWTs have 3 dot-separated segments; org API keys do not.
+  const looksLikeJwt = bearer.split(".").length === 3;
+  if (looksLikeJwt) return null;
+  return bearer;
+}
 
 function parseBody(body: unknown): LunaMessageStatusRequest | null {
   if (!body || typeof body !== "object") return null;
@@ -47,9 +64,24 @@ Deno.serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  if (!authorizeLunaWhatsAppBatchWebhookRequest(req)) {
-    return new Response("Unauthorized", { status: 401 });
+  const apiKey = extractApiKey(req);
+  if (!apiKey) {
+    return Response.json({ error: "Missing API key" }, { status: 401 });
   }
+
+  const apiClient = createApiClientFromKey(apiKey);
+  const { data: key, error: apiKeyError } = await apiClient
+    .from("api_keys")
+    .select("organization_id")
+    .eq("key", apiKey)
+    .maybeSingle();
+
+  if (apiKeyError || !key) {
+    log.error("API key not authorized", apiKeyError);
+    return Response.json({ error: "API key not authorized" }, { status: 401 });
+  }
+
+  const orgId = key.organization_id;
 
   let raw: unknown;
   try {
@@ -69,20 +101,25 @@ Deno.serve(async (req) => {
     );
   }
 
+  if (body.organization_id && body.organization_id !== orgId) {
+    return Response.json(
+      { error: "organization_id does not match API key org" },
+      { status: 403 },
+    );
+  }
+
+  // Members cannot UPDATE messages (RLS); auth is org API key, write is
+  // service-role scoped to that org — same pattern as agent-client.
   const client = createUnsecureClient();
   const now = new Date().toISOString();
 
-  let query = client
+  const { data: message, error: lookupError } = await client
     .from("messages")
     .select("id, organization_id, direction, service, external_id, status")
     .eq("external_id", body.external_id)
-    .eq("direction", "incoming");
-
-  if (body.organization_id) {
-    query = query.eq("organization_id", body.organization_id);
-  }
-
-  const { data: message, error: lookupError } = await query.maybeSingle();
+    .eq("direction", "incoming")
+    .eq("organization_id", orgId)
+    .maybeSingle();
 
   if (lookupError) {
     log.error("Failed to look up message for Luna status update", lookupError);
@@ -129,7 +166,8 @@ Deno.serve(async (req) => {
   const { error: updateError } = await client
     .from("messages")
     .update({ status: statusUpdate })
-    .eq("id", row.id);
+    .eq("id", row.id)
+    .eq("organization_id", orgId);
 
   if (updateError) {
     log.error("Failed to update message status for Luna", updateError);
