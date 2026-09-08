@@ -109,9 +109,10 @@ for each row
 when (
   new.direction = 'incoming'::public.direction
   and new.service <> 'local'::public.service
+  -- IS DISTINCT FROM: NULL -> value must fire (<> treats NULL as unknown and skips)
   and (
-    (old.status ->> 'read') <> (new.status ->> 'read')
-    or (old.status ->> 'typing') <> (new.status ->> 'typing')
+    (old.status ->> 'read') is distinct from (new.status ->> 'read')
+    or (old.status ->> 'typing') is distinct from (new.status ->> 'typing')
   )
   and (new.status ->> 'pending') is not null
 )
