@@ -36,11 +36,11 @@ function flowCallbackSecret(): string | undefined {
   return Deno.env.get("LUNA_WEBHOOK_SECRET") || undefined;
 }
 
-async function encryptedOk(
+function encryptedOk(
   response: FlowDataExchangeResponse,
   aesKey: Uint8Array,
   iv: Uint8Array,
-): Promise<Response> {
+): Response {
   const encryptedBody = encryptFlowResponse(response, aesKey, iv);
   return new Response(encryptedBody, {
     status: 200,

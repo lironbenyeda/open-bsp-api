@@ -1,12 +1,14 @@
-name: Check
+name: CI
 
 on:
   push:
     branches: [main, develop]
   pull_request:
+  # Manual run from the Actions tab (useful if a PR event was missed).
+  workflow_dispatch:
 
 jobs:
-  check:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,4 +17,5 @@ jobs:
           deno-version: v2.x
       - run: deno fmt --check
       - run: cd supabase/functions && deno lint && deno check .
+      - run: cd supabase/functions && deno test --allow-env _shared/luna-whatsapp-batch_test.ts
       - run: cd plugin && deno lint && deno check .

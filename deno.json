@@ -1,5 +1,8 @@
 {
   "fmt": {
-    "exclude": ["supabase/functions/_shared/db_types.ts"]
+    "exclude": [
+      "supabase/functions/_shared/db_types.ts",
+      "MIGRATING_FROM_WHATSAPP_WEB_JS.md"
+    ]
   }
 }
