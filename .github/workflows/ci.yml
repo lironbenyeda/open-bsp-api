@@ -1,12 +1,14 @@
-name: Check
+name: CI
 
 on:
   push:
     branches: [main, develop]
   pull_request:
+  # Manual run from the Actions tab (useful if a PR event was missed).
+  workflow_dispatch:
 
 jobs:
-  check:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
