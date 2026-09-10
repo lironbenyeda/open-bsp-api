@@ -737,7 +737,7 @@ export function resolveAbsorbMessageIds(input: {
   const windowMs = input.windowMs ?? SIBLING_TIMESTAMP_WINDOW_MS;
   const createdWithinMs = input.createdWithinMs ?? SIBLING_CREATED_WITHIN_MS;
 
-  let messageIds = uniqueMessageIds(
+  const messageIds = uniqueMessageIds(
     input.claimedMessageIds.filter((id) => !input.alreadySentIds.has(id)),
   );
   if (messageIds.length === 0) return "empty";
