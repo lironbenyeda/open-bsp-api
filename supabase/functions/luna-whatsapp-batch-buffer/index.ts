@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
   }
 
   const client = createUnsecureClient();
-  // Button/list taps: debounce 0 so Luna is called immediately.
+  // Forwarded: 2s hold for same-burst follow-ups; otherwise flush immediately.
   const debounceSeconds = lunaWhatsAppBatchDebounceSecondsForMessage(message);
 
   const { data: batchId, error } = await client.rpc(

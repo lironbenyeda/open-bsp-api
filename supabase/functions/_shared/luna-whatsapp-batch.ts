@@ -93,25 +93,32 @@ export type LunaWhatsAppBatchRow =
 
 const DEFAULT_CONTEXT_HOURS = 3;
 const DEFAULT_CONTEXT_MAX_MESSAGES = 20;
-const DEFAULT_DEBOUNCE_SECONDS = 7;
+/** Forwarded messages often arrive with a follow-up in the same burst. */
+export const FORWARDED_DEBOUNCE_SECONDS = 2;
+/** Pull other inbound msgs with Meta timestamp within ± this of the batch. */
+export const SIBLING_TIMESTAMP_WINDOW_MS = 1_000;
+/**
+ * Sibling candidates must also be recent inserts (or still in an open batch).
+ * Stops re-absorbing old already-sent rows that share a Meta second after the
+ * sent-batch lookback expires.
+ */
+export const SIBLING_CREATED_WITHIN_MS = 30_000;
+/** Look back this far for `sent`/`flushing` batches when skipping delivered ids. */
+export const RECENTLY_SENT_LOOKBACK_MS = 60_000;
 const MAX_FLUSH_ATTEMPTS = 5;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
 
-export function lunaWhatsAppBatchDebounceSeconds(): number {
-  const raw = Deno.env.get("LUNA_WHATSAPP_BATCH_DEBOUNCE_SECONDS");
-  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_DEBOUNCE_SECONDS;
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_DEBOUNCE_SECONDS;
-}
-
-/** Reply-button / list taps are complete intents — flush without the text debounce. */
+/**
+ * Debounce before flushing a Luna batch for this message.
+ * - Forwarded: 2s so a same-burst follow-up can join the open batch.
+ * - Everything else (incl. button/list taps): 0 — flush immediately.
+ */
 export function lunaWhatsAppBatchDebounceSecondsForMessage(
   message: MessageRow,
 ): number {
   const content = normalizeMessageRow(message).content as IncomingMessage;
-  if (lunaButtonTapFromContent(content)) return 0;
-  return lunaWhatsAppBatchDebounceSeconds();
+  if (content.forwarded) return FORWARDED_DEBOUNCE_SECONDS;
+  return 0;
 }
 
 export function lunaWhatsAppBatchContextHours(
@@ -665,6 +672,30 @@ export async function claimBatchForFlush(
   client: SupabaseClient<Database>,
   batchId: string,
 ): Promise<LunaWhatsAppBatchRow | null> {
+  const { data: openBatch } = await client
+    .from("luna_whatsapp_batches")
+    .select()
+    .eq("id", batchId)
+    .eq("status", "open")
+    .lte("flush_at", new Date().toISOString())
+    .maybeSingle();
+
+  if (!openBatch) return null;
+
+  // One flush per contact at a time — late siblings should wait and absorb/skip.
+  const { data: otherFlushing } = await client
+    .from("luna_whatsapp_batches")
+    .select("id")
+    .eq("organization_id", openBatch.organization_id)
+    .eq("contact_address", openBatch.contact_address)
+    .eq("service", openBatch.service)
+    .eq("status", "flushing")
+    .neq("id", batchId)
+    .limit(1)
+    .maybeSingle();
+
+  if (otherFlushing) return null;
+
   const { data } = await client
     .from("luna_whatsapp_batches")
     .update({ status: "flushing" })
@@ -675,6 +706,274 @@ export async function claimBatchForFlush(
     .maybeSingle();
 
   return data;
+}
+
+function uniqueMessageIds(ids: string[]): string[] {
+  return [...new Set(ids)];
+}
+
+export type SiblingAbsorbCandidate = {
+  id: string;
+  created_at: string | null;
+};
+
+/**
+ * Pure merge of claimed ids with same-Meta-second siblings.
+ * Returns `"empty"` when nothing left to send (all already delivered).
+ */
+export function resolveAbsorbMessageIds(input: {
+  claimedMessageIds: string[];
+  /** WhatsApp `timestamp` by message id (for claimed rows). */
+  batchTimestampsById: Map<string, string>;
+  candidates: SiblingAbsorbCandidate[];
+  alreadySentIds: Set<string>;
+  busyIds: Set<string>;
+  openBatchMessageIds: Set<string>;
+  nowMs?: number;
+  windowMs?: number;
+  createdWithinMs?: number;
+}): string[] | "empty" {
+  const nowMs = input.nowMs ?? Date.now();
+  const windowMs = input.windowMs ?? SIBLING_TIMESTAMP_WINDOW_MS;
+  const createdWithinMs = input.createdWithinMs ?? SIBLING_CREATED_WITHIN_MS;
+
+  let messageIds = uniqueMessageIds(
+    input.claimedMessageIds.filter((id) => !input.alreadySentIds.has(id)),
+  );
+  if (messageIds.length === 0) return "empty";
+
+  const times = messageIds
+    .map((id) => input.batchTimestampsById.get(id))
+    .filter((ts): ts is string => Boolean(ts))
+    .map((ts) => new Date(ts).getTime());
+  if (times.length === 0) return "empty";
+
+  const minTs = Math.min(...times) - windowMs;
+  const maxTs = Math.max(...times) + windowMs;
+  const createdAfter = new Date(nowMs - createdWithinMs).toISOString();
+
+  for (const row of input.candidates) {
+    if (input.busyIds.has(row.id) && !messageIds.includes(row.id)) continue;
+    if (input.alreadySentIds.has(row.id)) continue;
+    const ts = input.batchTimestampsById.get(row.id);
+    // Candidates are pre-filtered by SQL window; when a timestamp is known on
+    // the claimed map only, still require freshness for non-claimed ids.
+    const isFresh = input.openBatchMessageIds.has(row.id) ||
+      (row.created_at != null && row.created_at >= createdAfter);
+    if (!isFresh && !messageIds.includes(row.id)) continue;
+    // If we somehow got a candidate outside the window (tests), skip it.
+    if (ts) {
+      const t = new Date(ts).getTime();
+      if (t < minTs || t > maxTs) continue;
+    }
+    messageIds.push(row.id);
+  }
+
+  return uniqueMessageIds(messageIds);
+}
+
+export type SiblingOpenBatchUpdate =
+  | { type: "cancel"; id: string }
+  | { type: "trim"; id: string; message_ids: string[] };
+
+/** Decide how to clear absorbed ids from other open batches. */
+export function planSiblingOpenBatchUpdates(
+  otherOpen: Array<{ id: string; message_ids: string[] }>,
+  mergedIds: Set<string>,
+): SiblingOpenBatchUpdate[] {
+  const updates: SiblingOpenBatchUpdate[] = [];
+  for (const other of otherOpen) {
+    const remaining = other.message_ids.filter((id) => !mergedIds.has(id));
+    if (remaining.length === other.message_ids.length) continue;
+    if (remaining.length === 0) {
+      updates.push({ type: "cancel", id: other.id });
+    } else {
+      updates.push({
+        type: "trim",
+        id: other.id,
+        message_ids: remaining,
+      });
+    }
+  }
+  return updates;
+}
+
+/**
+ * After claim: fold in other inbound messages for this contact whose WhatsApp
+ * `timestamp` is within ±1s of the batch. Cancels or trims other open batches
+ * that only held those siblings so Luna gets one POST.
+ *
+ * DB shape: 2 parallel reads → 1 sibling read → optional parallel writes.
+ */
+export async function absorbTimestampSiblingMessages(
+  client: SupabaseClient<Database>,
+  claimed: LunaWhatsAppBatchRow,
+): Promise<LunaWhatsAppBatchRow | "empty"> {
+  const thread = {
+    organization_id: claimed.organization_id,
+    contact_address: claimed.contact_address,
+    service: claimed.service,
+  };
+  const lookbackIso = new Date(Date.now() - RECENTLY_SENT_LOOKBACK_MS)
+    .toISOString();
+
+  const [{ data: batchMessages }, { data: contactBatches }] = await Promise.all(
+    [
+      client
+        .from("messages")
+        .select(
+          "id, timestamp, created_at, direction, service, contact_address, content",
+        )
+        .in("id", claimed.message_ids)
+        .throwOnError(),
+      client
+        .from("luna_whatsapp_batches")
+        .select("id, status, message_ids")
+        .eq("organization_id", thread.organization_id)
+        .eq("contact_address", thread.contact_address)
+        .eq("service", thread.service)
+        .in("status", ["open", "flushing", "sent"])
+        .neq("id", claimed.id)
+        // Always keep open rows; only recent flushing/sent for dedupe.
+        .or(`status.eq.open,updated_at.gte."${lookbackIso}"`)
+        .throwOnError(),
+    ],
+  );
+
+  if (!batchMessages?.length) return "empty";
+
+  const alreadySentIds = new Set<string>();
+  const busyIds = new Set<string>();
+  const openBatchMessageIds = new Set<string>();
+  const otherOpen: Array<{ id: string; message_ids: string[] }> = [];
+
+  for (const row of contactBatches ?? []) {
+    const ids = row.message_ids ?? [];
+    if (row.status === "open") {
+      otherOpen.push({ id: row.id, message_ids: ids });
+      for (const id of ids) openBatchMessageIds.add(id);
+      continue;
+    }
+    for (const id of ids) {
+      busyIds.add(id);
+      if (row.status === "sent") alreadySentIds.add(id);
+    }
+  }
+
+  const remainingClaimed = claimed.message_ids.filter((id) =>
+    !alreadySentIds.has(id)
+  );
+  if (remainingClaimed.length === 0) return "empty";
+
+  const batchTimestampsById = new Map(
+    batchMessages.map((m) => [m.id, m.timestamp]),
+  );
+  const times = remainingClaimed
+    .map((id) => batchTimestampsById.get(id))
+    .filter((ts): ts is string => Boolean(ts))
+    .map((ts) => new Date(ts).getTime());
+  if (times.length === 0) return "empty";
+
+  const minTs = new Date(Math.min(...times) - SIBLING_TIMESTAMP_WINDOW_MS)
+    .toISOString();
+  const maxTs = new Date(Math.max(...times) + SIBLING_TIMESTAMP_WINDOW_MS)
+    .toISOString();
+
+  const { data: candidates } = await client
+    .from("messages")
+    .select(
+      "id, timestamp, created_at, direction, service, contact_address, content",
+    )
+    .eq("organization_id", thread.organization_id)
+    .eq("contact_address", thread.contact_address)
+    .eq("service", thread.service)
+    .eq("direction", "incoming")
+    .gte("timestamp", minTs)
+    .lte("timestamp", maxTs)
+    .throwOnError();
+
+  const eligibleCandidates: SiblingAbsorbCandidate[] = [];
+  for (const row of candidates ?? []) {
+    if (!shouldEnqueueLunaWhatsAppBatch(row as MessageRow)) continue;
+    eligibleCandidates.push({
+      id: row.id,
+      created_at: row.created_at ?? null,
+    });
+    if (row.timestamp) batchTimestampsById.set(row.id, row.timestamp);
+  }
+
+  const messageIds = resolveAbsorbMessageIds({
+    claimedMessageIds: claimed.message_ids,
+    batchTimestampsById,
+    candidates: eligibleCandidates,
+    alreadySentIds,
+    busyIds,
+    openBatchMessageIds,
+  });
+  if (messageIds === "empty") return "empty";
+
+  const mergedSet = new Set(messageIds);
+  const idsChanged = messageIds.length !== claimed.message_ids.length ||
+    messageIds.some((id, i) => id !== claimed.message_ids[i]);
+  const openUpdates = planSiblingOpenBatchUpdates(otherOpen, mergedSet);
+
+  const writes: Promise<unknown>[] = [];
+  if (idsChanged) {
+    writes.push(
+      Promise.resolve(
+        client
+          .from("luna_whatsapp_batches")
+          .update({ message_ids: messageIds })
+          .eq("id", claimed.id)
+          .throwOnError(),
+      ),
+    );
+  }
+
+  for (const update of openUpdates) {
+    if (update.type === "cancel") {
+      writes.push(
+        Promise.resolve(
+          client
+            .from("luna_whatsapp_batches")
+            .update({
+              status: "sent",
+              luna_response: {
+                skipped: true,
+                reason: "absorbed_into_sibling_batch",
+                absorbed_by: claimed.id,
+              },
+              error_message: null,
+            })
+            .eq("id", update.id)
+            .eq("status", "open")
+            .throwOnError(),
+        ),
+      );
+    } else {
+      writes.push(
+        Promise.resolve(
+          client
+            .from("luna_whatsapp_batches")
+            .update({ message_ids: update.message_ids })
+            .eq("id", update.id)
+            .eq("status", "open")
+            .throwOnError(),
+        ),
+      );
+    }
+  }
+
+  if (writes.length) await Promise.all(writes);
+
+  if (idsChanged) {
+    log.info("Absorbed timestamp-sibling messages into Luna batch", {
+      batchId: claimed.id,
+      messageIds,
+    });
+  }
+
+  return { ...claimed, message_ids: messageIds };
 }
 
 export async function flushLunaWhatsAppBatch(
@@ -696,16 +995,33 @@ export async function flushLunaWhatsAppBatch(
     return "skipped";
   }
 
+  const absorbed = await absorbTimestampSiblingMessages(client, claimed);
+  if (absorbed === "empty") {
+    await client
+      .from("luna_whatsapp_batches")
+      .update({
+        status: "sent",
+        luna_response: {
+          skipped: true,
+          reason: "messages_already_sent_in_sibling_batch",
+        },
+        error_message: null,
+      })
+      .eq("id", batchId)
+      .throwOnError();
+    return "flushed";
+  }
+
   const { data: organization } = await client
     .from("organizations")
     .select()
-    .eq("id", claimed.organization_id)
+    .eq("id", absorbed.organization_id)
     .single()
     .throwOnError();
 
   try {
     const payload = await buildLunaWhatsAppBatchPayload(client, {
-      batch: claimed,
+      batch: absorbed,
       organization,
     });
 

@@ -4,7 +4,7 @@ create or replace function public.luna_whatsapp_batch_enqueue_message(
   p_contact_address text,
   p_message_id uuid,
   p_service public.service default 'whatsapp'::public.service,
-  p_debounce_seconds integer default 7
+  p_debounce_seconds integer default 0
 ) returns uuid
 language plpgsql
 security definer
